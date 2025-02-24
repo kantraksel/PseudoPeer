@@ -1,16 +1,13 @@
 #pragma once
-#include "wnet.h"
-#include "Connection.h"
 #include "Thread.h"
 #include "Transport.h"
 
 class Server
 {
-	friend Thread;
 	private:
-		Transport transport;
 		Thread thread;
-
+		Transport transport;
+		
 		void ServerThread();
 
 	public:

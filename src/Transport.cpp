@@ -1,20 +1,16 @@
 #include "Logger.h"
-#include "Server.h"
+#include "Thread.h"
+#include "Transport.h"
 
 Transport::Transport(Thread& thread) : thread(thread)
 {
 	connectedCount = 0;
 	nearestFreeSlot = 0;
-	memset(sockets, 0, sizeof(sockets)/sizeof(*sockets));
-}
-
-Transport::~Transport()
-{
-
 }
 
 void Transport::Reset()
 {
+	nearestFreeSlot = 0;
 	connectedCount = 0;
 	for (int i = 0; i < SLOTS; ++i)
 	{
@@ -22,98 +18,22 @@ void Transport::Reset()
 	}
 }
 
-bool Transport::Kick(unsigned int id)
-{
-	auto& conn = users[id];
-	if (conn.IsConnected())
-	{
-		KickInternal(conn, id);
-		return true;
-	}
-	return false;
-}
-
-void Transport::KickInternal(Connection& conn, unsigned int id)
-{
-	conn.OnDisconnect();
-	--connectedCount;
-	if (nearestFreeSlot > id) nearestFreeSlot = id;
-}
-
-bool Transport::HasAnyConnection()
-{
-	return connectedCount > 0;
-}
-
-unsigned short Transport::GetConnectionCount()
-{
-	return connectedCount;
-}
-
-void Transport::ForEachConnection(std::function<void(Connection&)> callback)
-{
-	for (int i = 0; i < SLOTS; ++i)
-	{
-		Connection& conn = users[i];
-		if (conn.IsConnected())
-			callback(conn);
-	}
-}
-
-static void PrintNewPeer(WNET::PeerData& data, unsigned int id)
-{
-	WNET::PeerInfo info;
-	WNET::Subsystem::GetPeerInfo(data, info);
-	Logger::Log(std::string(info.addr) + ':' + std::to_string(info.port) + " (" + std::to_string(data.address) + ':' + std::to_string(data.port) + ')' + " - connected. Assigned ID: " + std::to_string(id));
-}
-
-Connection* Transport::GetSender(WNET::PeerData& data)
-{
-	Connection* pSender = nullptr;
-	for (int i = 0; i < SLOTS; ++i)
-	{
-		pSender = users + i;
-		if (*pSender == data)
-			break;
-	}
-
-	if (!pSender && connectedCount < SLOTS)
-	{
-		pSender = users + nearestFreeSlot;
-		
-		pSender->OnConnect(data);
-		++connectedCount;
-		PrintNewPeer(data, pSender->GetID());
-
-		for (int i = nearestFreeSlot + 1; i < SLOTS; ++i)
-		{
-			if (!users[i].IsConnected())
-			{
-				nearestFreeSlot = i;
-				break;
-			}
-		}
-	}
-
-	return pSender;
-}
-
+// main functions
 bool Transport::Prepare()
 {
 	bool bound = true;
 	for (int i = 0; i < SLOTS; ++i)
 	{
-		auto* pSocket = sockets[i] = WNET::IUDPSocket::Create();
-		unsigned short port = 7777 + i;
-		if (!pSocket->BindSocket("0.0.0.0", port))
+		auto& socket = users[i].GetSocket();
+		unsigned short port = 7741 + i;
+		if (!socket.Create() || !socket.Bind("0.0.0.0", port))
 		{
 			Logger::Log("Failed to bind at 0.0.0.0:" + std::to_string(port));
 			bound = false;
 			break;
 		}
 		
-		pSocket->SetBlockingMode(false);
-		users[i].Setup(pSocket, i);
+		users[i].Setup(i);
 	}
 
 	return bound;
@@ -125,14 +45,13 @@ void Transport::ListenLoop()
 	WNET::PollFD fds[SLOTS];
 	for (int i = 0; i < SLOTS; ++i)
 	{
-		fds[i].fd = sockets[i]->GetSocket();
+		fds[i].fd = users[i].GetSocket().GetSocket();
 	}
-	nearestFreeSlot = 0;
 
-	WNET::PeerData data;
+	WNET::Endpoint data;
 	while (!thread.IsStopping())
 	{
-		int nevents = WNET::PollFD::Poll(fds, SLOTS, 1000);
+		int nevents = WNET::PollFD::Poll(fds, SLOTS, 100);
 		if (nevents > 0)
 		{
 			for (int i = 0; i < SLOTS; ++i)
@@ -141,28 +60,19 @@ void Transport::ListenLoop()
 				if (fd.isSignaled())
 				{
 					fd.clearSignal();
-					int receivedSize = sockets[i]->ReceiveFrom(buffer, sizeof(buffer), data);
-					if (receivedSize > 0) HandlePacket(i, buffer, receivedSize, data);
+
+					while (true)
+					{
+						int receivedSize = users[i].GetSocket().ReceiveFrom(buffer, sizeof(buffer), data);
+						if (receivedSize > 0)
+							HandlePacket(i, buffer, receivedSize, data);
+						else break;
+					}
 				}
 			}
 		}
-		CheckTimers();
-	}
-}
 
-void Transport::HandlePacket(unsigned int receiverId, const char* buff, int bufflen, WNET::PeerData& data)
-{
-	Connection* pSender = GetSender(data);
-	if (pSender)
-	{
-		pSender->ticks = 0;
-		Connection& receiver = users[receiverId];
-		if (receiver.IsConnected())
-		{
-			data.address = receiver.GetIP();
-			data.port = receiver.GetPort();
-			pSender->GetSocket()->SendTo(buff, bufflen, data);
-		}
+		UpdateTimers();
 	}
 }
 
@@ -170,44 +80,121 @@ void Transport::Shutdown()
 {
 	for (int i = 0; i < SLOTS; ++i)
 	{
-		WNET::IUDPSocket* pSocket = sockets[i];
-		if (pSocket)
-			delete pSocket;
-		sockets[i] = nullptr;
+		auto& socket = users[i].GetSocket();
+		socket.Close();
 	}
 }
 
-void Transport::CheckTimers()
+// Kick
+bool Transport::Kick(unsigned int id)
 {
-	static unsigned long long totalUpdateTime = 0;
-	static unsigned long long lastTime = 0;
+	if (id >= SLOTS)
+		return false;
 
-	unsigned long long nowTime = std::chrono::steady_clock::now().time_since_epoch().count();
-	totalUpdateTime += nowTime - lastTime;
-	lastTime = nowTime;
-
-	constexpr unsigned long long SecondInNano = 1000000000;
-	if (totalUpdateTime >= SecondInNano)
-	{
-		totalUpdateTime = 0;
-		UpdateTimers();
-	}
+	auto& conn = users[id];
+	if (!conn.IsConnected())
+		return false;
+	
+	KickInternal(conn, id);
+	return true;
 }
 
-void Transport::UpdateTimers()
+void Transport::KickInternal(Connection& conn, unsigned int id)
+{
+	conn.OnDisconnect();
+	--connectedCount;
+
+	if (nearestFreeSlot > id)
+		nearestFreeSlot = id;
+}
+
+// Utilities
+unsigned short Transport::GetConnectionCount()
+{
+	return connectedCount;
+}
+
+void Transport::ForEachConnection(std::function<void(Connection&)> callback)
 {
 	for (int i = 0; i < SLOTS; ++i)
 	{
-		Connection& conn = users[i];
-		if (!conn.IsConnected()) continue;
-		unsigned short ticks = conn.ticks;
-		if (ticks == MAX_USHORT) continue;
+		auto& conn = users[i];
+		if (conn.IsConnected())
+			callback(conn);
+	}
+}
+
+// private utils
+static void PrintNewPeer(WNET::Endpoint& data, unsigned int id)
+{
+	auto info = data.ToAddress();
+	Logger::Log(std::string(info.address) + ':' + std::to_string(info.port) + " - connected. Assigned ID: " + std::to_string(id));
+}
+
+Connection* Transport::GetSender(WNET::Endpoint& data)
+{
+	for (int i = 0; i < SLOTS; ++i)
+	{
+		auto* pConn = users + i;
+		if (*pConn == data)
+			return pConn;
+	}
+
+	if (connectedCount < SLOTS)
+	{
+		++connectedCount;
+
+		auto* pConn = users + nearestFreeSlot;
+		pConn->OnConnect();
+
+		for (int i = nearestFreeSlot + 1; i < SLOTS; ++i)
+		{
+			if (!users[i].IsConnected())
+			{
+				nearestFreeSlot = i;
+				break;
+			}
+		}
+
+		PrintNewPeer(data, pConn->GetID());
+		return pConn;
+	}
+
+	return nullptr;
+}
+
+void Transport::HandlePacket(unsigned int receiverId, const char* buff, int bufflen, WNET::Endpoint& data)
+{
+	auto* pSender = GetSender(data);
+	if (pSender)
+	{
+		pSender->SetLastReceive(std::chrono::steady_clock::now().time_since_epoch().count());
+
+		auto& receiver = users[receiverId];
+		if (receiver.IsConnected())
+		{
+			data = receiver.GetSocket().GetPeer();
+			pSender->GetSocket().SendTo(buff, bufflen, data);
+		}
+	}
+}
+
+// Timers
+void Transport::UpdateTimers()
+{
+	constexpr long long Timeout = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::seconds(TIMEOUT)).count();
+	auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+
+	for (int i = 0; i < SLOTS; ++i)
+	{
+		auto& conn = users[i];
+		if (!conn.IsConnected())
+			continue;
 		
-		if (ticks++ == TIMEOUT)
+		if ((now - conn.GetLastReceive()) >= Timeout)
 		{
 			KickInternal(users[i], i);
 			Logger::Log(std::to_string(i) + " timed out");
 		}
-		else conn.ticks = ticks;
 	}
 }

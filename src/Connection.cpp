@@ -1,18 +1,14 @@
-#include "wnet.h"
 #include "Connection.h"
 
 Connection::Connection()
 {
-	id = 0;
-	ip = 0;
-	port = 0;
 	isConnected = false;
-	pSocket = nullptr;
+	id = 0;
+	lastReceive = 0;
 }
 
-void Connection::Setup(WNET::IUDPSocket* pSocket, unsigned int id)
+void Connection::Setup(unsigned int id)
 {
-	this->pSocket = pSocket;
 	this->id = id;
 }
 
@@ -21,32 +17,15 @@ unsigned int Connection::GetID() const
 	return id;
 }
 
-unsigned int Connection::GetIP() const
-{
-	return ip;
-}
-
-unsigned short Connection::GetPort() const
-{
-	return port;
-}
-
 bool Connection::IsConnected() const
 {
 	return isConnected;
 }
 
-WNET::IUDPSocket* Connection::GetSocket() const
+void Connection::OnConnect()
 {
-	return pSocket;
-}
-
-void Connection::OnConnect(const WNET::PeerData& data)
-{
-	ip = data.address;
-	port = data.port;
+	lastReceive = 0;
 	isConnected = true;
-	ticks = 0;
 }
 
 void Connection::OnDisconnect()
@@ -54,7 +33,23 @@ void Connection::OnDisconnect()
 	isConnected = false;
 }
 
-bool Connection::operator==(const WNET::PeerData& data)
+WNET::UdpSocket& Connection::GetSocket()
 {
-	return this->isConnected && this->ip == data.address && this->port == data.port;
+	return socket;
+}
+
+long long Connection::GetLastReceive() const
+{
+	return lastReceive;
+}
+
+void Connection::SetLastReceive(long long time)
+{
+	lastReceive = time;
+}
+
+bool Connection::operator==(const WNET::Endpoint& data)
+{
+	auto& peer = socket.GetPeer();
+	return this->isConnected && peer.address == data.address && peer.port == data.port;
 }

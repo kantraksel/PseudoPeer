@@ -1,27 +1,26 @@
 #pragma once
-#define MAX_USHORT (unsigned short)0xFFFFU
+#include "wnet.h"
 
 class Connection
 {
-	bool isConnected;
-	unsigned char id;
-	unsigned int ip;
-	unsigned short port;
-	WNET::IUDPSocket* pSocket;
+	private:
+		WNET::UdpSocket socket;
+		bool isConnected;
+		unsigned char id;
+		long long lastReceive;
 
 	public:
-		unsigned short ticks;
 		Connection();
-		void Setup(WNET::IUDPSocket* pSocket, unsigned int id);
-
-		unsigned int GetID() const;
-		unsigned int GetIP() const;
-		unsigned short GetPort() const;
-		WNET::IUDPSocket* GetSocket() const;
+		void Setup(unsigned int id);
 
 		bool IsConnected() const;
-		void OnConnect(const WNET::PeerData& data);
+		void OnConnect();
 		void OnDisconnect();
 
-		bool operator==(const WNET::PeerData& data);
+		unsigned int GetID() const;
+		WNET::UdpSocket& GetSocket();
+		long long GetLastReceive() const;
+		void SetLastReceive(long long time);
+
+		bool operator==(const WNET::Endpoint& data);
 };

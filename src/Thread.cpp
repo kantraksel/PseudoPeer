@@ -1,47 +1,47 @@
 #include "Server.h"
-#include <cassert>
 
-Thread::Thread(Server* pServer) : cvMutex(iMutex), pServer(pServer)
+Thread::Thread()
 {
-	hThread = nullptr;
-	isThreadInit = false;
-	shutdown = false;
+	isReady = false;
 }
 
 Thread::~Thread()
 {
-
+	Stop();
 }
 
-void Thread::Start()
+void Thread::Start(StartRoutine routine)
 {
-	assert(hThread == nullptr);
+	if (thread.joinable())
+		return;
+	
+	isReady = false;
+	std::unique_lock cvMutex(mutex);
 
-	shutdown = false;
-	hThread = new std::thread(&Server::ServerThread, pServer);
-
-	cv.wait(cvMutex, [&] { return isThreadInit; });
+	thread = std::jthread(routine);
+	cv.wait(cvMutex, [this] { return isReady; });
 }
 
 void Thread::Stop()
 {
-	shutdown = true;
-	
-	if (hThread)
+	if (thread.joinable())
 	{
-		hThread->join();
-		delete hThread;
-		hThread = nullptr;
+		thread.request_stop();
+		thread = {};
 	}
 }
 
-void Thread::NotifyThreadReady()
+void Thread::NotifyReady()
 {
-	isThreadInit = true;
+	{
+		std::lock_guard lock(mutex);
+		isReady = true;
+	}
+	
 	cv.notify_one();
 }
 
 bool Thread::IsStopping()
 {
-	return shutdown;
+	return thread.get_stop_token().stop_requested();
 }

@@ -1,28 +1,25 @@
 #pragma once
-#include <thread>
 #include <condition_variable>
-
-class Server;
+#include <functional>
+#include <thread>
 
 class Thread
 {
 	private:
-		std::thread* hThread;
-		Server* pServer;
-
-		std::mutex iMutex;
-		std::unique_lock<std::mutex> cvMutex;
+		std::jthread thread;
+		std::mutex mutex;
 		std::condition_variable cv;
-		bool isThreadInit;
-		bool shutdown;
-
+		bool isReady;
+		
 	public:
-		Thread(Server* pServer);
+		typedef std::function<void()> StartRoutine;
+
+		Thread();
 		~Thread();
 
-		void Start();
+		void Start(StartRoutine routine);
 		void Stop();
 
-		void NotifyThreadReady();
+		void NotifyReady();
 		bool IsStopping();
 };
